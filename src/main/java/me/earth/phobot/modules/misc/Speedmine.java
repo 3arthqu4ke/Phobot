@@ -61,7 +61,9 @@ import java.util.Objects;
 // TODO: make the rendering a bit smarter
 @Slf4j
 public class Speedmine extends PhobotModule implements DisplaysHudInfo {
+    private final Setting<Mode> mode = constant("Mode", Mode.Instant, "Mode to use.");
     private final Setting<Boolean> fast = bool("Fast", true, "Allows you mine blocks quicker if you place them on the same position.");
+    private final Setting<Boolean> grim = bool("Grim", true, "Allows you to mine blocks at 0.7 damage instead of 1.0");
     private final Setting<Boolean> silentSwitch = bool("Switch", true, "Silently switches to your tool to mine.");
     private final Setting<Boolean> noGlitchBlocks = bool("NoGlitchBlocks", false, "If off sets the block to air on the clientside immediately.");
     private final Setting<Boolean> swing = bool("Swing", false, "Swings every tick.");
@@ -146,13 +148,21 @@ public class Speedmine extends PhobotModule implements DisplaysHudInfo {
         listen(new Listener<RenderEvent>() {
             @Override
             public void onEvent(RenderEvent event) {
+                final boolean var2 = grim.getValue();
                 if (currentPos != null && !currentState.isAir()) {
                     for (AABB bb : renderBBs) {
                         event.getAabb().set(bb);
                         event.getAabb().move(currentPos.getX(), currentPos.getY(), currentPos.getZ());
                         float damage = MathUtil.clamp(renderDamageDelta * renderTicks, 0.0f, 1.0f);
+                        if (var2) {
+                            damage = normalize(damage);
+                        }
                         // TODO: proper offsets
-                        event.getAabb().grow(-0.5 + MathUtil.clamp((renderDamageDelta * renderTicks / 2.0) + renderDamageDelta * event.getTickDelta() - renderDamageDelta, 0.0, 0.5));
+                        float renderDamage = MathUtil.clamp((renderDamageDelta * renderTicks / 2.0) + renderDamageDelta * event.getTickDelta() - renderDamageDelta, 0.0, 0.5);
+                        if (var2) {
+                            renderDamage = normalize(renderDamage * 2) / 2;
+                        }
+                        event.getAabb().grow(-0.5 + renderDamage);
                         event.setBoxColor(1.0f - damage, damage, 0.0f, 1.0f, 0.4f);
                         Renderer.renderBoxWithOutlineAndSides(event, 1.5f, true);
                         return; // TODO: do this properly and fill out the entire voxel shape bbs, LightSectionDebugRenderer has a bit of an example
@@ -244,7 +254,7 @@ public class Speedmine extends PhobotModule implements DisplaysHudInfo {
             MutableObject<Float> bestDamage = new MutableObject<>(0.0f);
             MutableObject<Float> bestDamageDelta = new MutableObject<>(0.0f);
             calculateSlots(context, player, level, bestDamage, new MutableObject<>(), bestDamageDelta);
-            float timeLeft = ((1.0f - bestDamage.getValue()) / bestDamageDelta.getValue()) * 50;
+            float timeLeft = (((grim.getValue() ? 0.7f : 1.0f) - bestDamage.getValue()) / bestDamageDelta.getValue()) * 50;
             return (int) timeLeft;
         }, true, Integer.MAX_VALUE);
     }
@@ -273,7 +283,7 @@ public class Speedmine extends PhobotModule implements DisplaysHudInfo {
         currentState = level.getBlockState(currentPos);
         renderBBs = currentState.getShape(level, currentPos).toAabbs();
         if (canMine(currentPos, currentState, player, level)) {
-            if (sendAbortNextTick && fast.getValue()) {
+            if (sendAbortNextTick && mode.getValue().equals(Mode.Fast)) {
                 player.connection.send(new ServerboundPlayerActionPacket(ServerboundPlayerActionPacket.Action.ABORT_DESTROY_BLOCK, currentPos, currentDirection));
                 sendAbortNextTick = false;
             }
@@ -353,7 +363,7 @@ public class Speedmine extends PhobotModule implements DisplaysHudInfo {
             renderDamageDelta = getDestroyProgress(currentPos, currentState, level, player, bestSlot.getValue().getItem(), true);
         }
 
-        return bestDamage.getValue() >= 1.0f ? bestSlot.getValue() : null;
+        return bestDamage.getValue() >= 1.0f || (grim.getValue() && bestDamage.getValue() >= 0.7f) ? bestSlot.getValue() : null;
     }
 
     private double getTicks() {
@@ -384,7 +394,7 @@ public class Speedmine extends PhobotModule implements DisplaysHudInfo {
                 bestDamageDelta.setValue(damageDelta);
             }
 
-            boolean isCurrentAndCanBreak = context.isSelected(slot) && damage >= 1.0f;
+            boolean isCurrentAndCanBreak = context.isSelected(slot) && damage >= 1.0f || (grim.getValue() && damage >= 0.7f);
             if (damage > bestDamage.getValue() || isCurrentAndCanBreak) {
                 bestDamage.setValue(damage);
                 bestSlot.setValue(slot);
@@ -445,6 +455,11 @@ public class Speedmine extends PhobotModule implements DisplaysHudInfo {
 
     private void breakCurrentPos(LocalPlayer player, Direction currentDirection, ClientLevel level) {
         if (currentPos != null && !player.isCreative()) {
+            if (mode.getValue().equals(Mode.Instant) && currentState.isAir()) {
+                // This should prevent you from sending stop destroy packets for an air block
+                return;
+            }
+            
             PredictionUtil.predict(level, seq -> {
                 player.connection.send(new ServerboundPlayerActionPacket(ServerboundPlayerActionPacket.Action.STOP_DESTROY_BLOCK, currentPos, currentDirection, seq));
                 if (!noGlitchBlocks.getValue() && mc.gameMode != null) {
@@ -456,16 +471,20 @@ public class Speedmine extends PhobotModule implements DisplaysHudInfo {
             expectingAir = true;
             player.connection.send(Swing.uncancellable(InteractionHand.MAIN_HAND));
             player.swing(InteractionHand.MAIN_HAND, false);
-            if (fast.getValue()) {
-                player.connection.send(new ServerboundPlayerActionPacket(ServerboundPlayerActionPacket.Action.ABORT_DESTROY_BLOCK, currentPos.relative(currentDirection), currentDirection.getOpposite()));
-                player.connection.send(new ServerboundPlayerActionPacket(ServerboundPlayerActionPacket.Action.START_DESTROY_BLOCK, currentPos, currentDirection));
-                player.connection.send(new ServerboundPlayerActionPacket(ServerboundPlayerActionPacket.Action.STOP_DESTROY_BLOCK, currentPos, currentDirection));
-                timer.reset();
-                renderDamageDelta = 0.0f;
-                renderTicks = 0;
-                sendAbortNextTick = false;
-            } else {
-                reset();
+            switch(mode.getValue()) {
+                case Normal -> reset();
+                case Fast -> {
+                    player.connection.send(new ServerboundPlayerActionPacket(ServerboundPlayerActionPacket.Action.ABORT_DESTROY_BLOCK, currentPos.relative(currentDirection), currentDirection.getOpposite()));
+                    player.connection.send(new ServerboundPlayerActionPacket(ServerboundPlayerActionPacket.Action.START_DESTROY_BLOCK, currentPos, currentDirection));
+                    player.connection.send(new ServerboundPlayerActionPacket(ServerboundPlayerActionPacket.Action.STOP_DESTROY_BLOCK, currentPos, currentDirection));
+                    timer.reset();
+                    renderDamageDelta = 0.0f;
+                    renderTicks = 0;
+                    sendAbortNextTick = false;
+                }
+                case Instant -> {
+                    // Empty
+                }
             }
         }
     }
@@ -548,6 +567,12 @@ public class Speedmine extends PhobotModule implements DisplaysHudInfo {
         return null;
     }
 
+    private float normalize(double value) {
+        float minValue = 0.0f;
+        float maxValue = 0.7f;
+        return (float) ((value - minValue) / (maxValue - minValue));
+    }
+
     private void reset() {
         currentPos = null;
         currentState = Blocks.AIR.defaultBlockState();
@@ -570,4 +595,7 @@ public class Speedmine extends PhobotModule implements DisplaysHudInfo {
         private final MultiPlayerGameMode gameMode;
     }
 
+    private enum Mode {
+        Normal, Fast, Instant
+    }
 }
