@@ -68,6 +68,7 @@ public class Speedmine extends PhobotModule implements DisplaysHudInfo {
     private final Setting<Boolean> noGlitchBlocks = bool("NoGlitchBlocks", false, "If off sets the block to air on the clientside immediately.");
     private final Setting<Boolean> swing = bool("Swing", false, "Swings every tick.");
     private final Setting<Boolean> addTick = boolBuilder("AddTick", false).withDescription("Waits another tick before breaking.").withComplexity(Complexities.DEV).register(this);
+    private final Setting<Boolean> antiFail = boolBuilder("AntiFail", true).withDescription("Re-mines the block if you fail to mine it.").withComplexity(Complexities.DEV).register(this);
     private final StopWatch.ForSingleThread expectingAirTimer = new StopWatch.ForSingleThread();
     private final StopWatch.ForSingleThread timer = new StopWatch.ForSingleThread();
 
@@ -155,12 +156,12 @@ public class Speedmine extends PhobotModule implements DisplaysHudInfo {
                         event.getAabb().move(currentPos.getX(), currentPos.getY(), currentPos.getZ());
                         float damage = MathUtil.clamp(renderDamageDelta * renderTicks, 0.0f, 1.0f);
                         if (var2) {
-                            damage = normalize(damage);
+                            damage = MathUtil.clamp(normalize(damage), 0.0f, 1.0f);
                         }
                         // TODO: proper offsets
                         double renderDamage = MathUtil.clamp((renderDamageDelta * renderTicks / 2.0) + renderDamageDelta * event.getTickDelta() - renderDamageDelta, 0.0, 0.5);
                         if (var2) {
-                            renderDamage = normalize(renderDamage * 2) / 2;
+                            renderDamage = MathUtil.clamp(normalize(renderDamage * 2) / 2, 0.0f, 0.5f);
                         }
                         event.getAabb().grow(-0.5 + renderDamage);
                         event.setBoxColor(1.0f - damage, damage, 0.0f, 1.0f, 0.4f);
@@ -213,6 +214,11 @@ public class Speedmine extends PhobotModule implements DisplaysHudInfo {
         listen(new SafeListener<PacketEvent.PostSend<ServerboundSetCarriedItemPacket>>(mc) {
             @Override
             public void onEvent(PacketEvent.PostSend<ServerboundSetCarriedItemPacket> event, LocalPlayer player, ClientLevel level, MultiPlayerGameMode gameMode) {
+                if (grim.getValue()) {
+                    // Only required for NCP.
+                    return;
+                }
+
                 mc.submit(() -> {
                     if (!player.isCreative() && currentPos != null) {
                         Direction currentDirection = getDirection();
@@ -266,7 +272,7 @@ public class Speedmine extends PhobotModule implements DisplaysHudInfo {
             return;
         }
 
-        if (expectingAir && expectingAirTimer.passed(125L) && currentPos != null) {
+        if (expectingAir && expectingAirTimer.passed(125L) && currentPos != null && antiFail.getValue()) {
             getPingBypass().getChat().send(Component.literal("Failed to mine " + PositionUtil.toSimpleString(currentPos) + " re-mining.").withStyle(ChatFormatting.RED), "Speedmine");
             BlockPos posBeforeReset = currentPos;
             startDestroy(posBeforeReset, currentDirection, level, player); // abort
