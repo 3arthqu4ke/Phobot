@@ -158,7 +158,7 @@ public class Speedmine extends PhobotModule implements DisplaysHudInfo {
                             damage = normalize(damage);
                         }
                         // TODO: proper offsets
-                        float renderDamage = MathUtil.clamp((renderDamageDelta * renderTicks / 2.0) + renderDamageDelta * event.getTickDelta() - renderDamageDelta, 0.0, 0.5);
+                        double renderDamage = MathUtil.clamp((renderDamageDelta * renderTicks / 2.0) + renderDamageDelta * event.getTickDelta() - renderDamageDelta, 0.0, 0.5);
                         if (var2) {
                             renderDamage = normalize(renderDamage * 2) / 2;
                         }
